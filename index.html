@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>客服回复助手 手机版</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <div><h1>客服回复助手</h1><p id="status">正在读取数据库...</p></div>
+      <button id="refresh" type="button">刷新</button>
+    </header>
+    <section class="selectors">
+      <label>房源<select id="listing"></select></label>
+      <label>房间<select id="room"></select></label>
+    </section>
+    <section class="search">
+      <input id="query" type="search" placeholder="搜索问题 / 输入客人问题">
+      <button id="search" type="button">搜索</button>
+    </section>
+    <section id="candidates" class="candidates" hidden></section>
+    <section class="meta">
+      <div><b>匹配来源</b><span id="source">-</span></div>
+      <div id="note-wrap"><b>内部备注</b><span id="note">-</span></div>
+    </section>
+    <section class="answers">
+      <article><div><h2>日语</h2><button data-copy="ja" type="button">复制日语</button></div><textarea id="ja"></textarea></article>
+      <article><div><h2>中文</h2><button data-copy="zh" type="button">复制中文</button></div><textarea id="zh"></textarea></article>
+      <article><div><h2>英语</h2><button data-copy="en" type="button">复制英语</button></div><textarea id="en"></textarea></article>
+    </section>
+  </main>
+  <script src="./xlsx.full.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
