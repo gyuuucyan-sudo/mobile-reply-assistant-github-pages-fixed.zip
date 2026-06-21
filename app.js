@@ -29,20 +29,42 @@ function bind() {
 
 async function loadDatabase() {
   try {
-    const response = await fetch(`${DB_URL}?_=${Date.now()}`, { cache: "no-store" });
+    $("#status").textContent = "正在读取腾讯云数据库...";
+    const response = await fetchWithTimeout(`${DB_URL}?_=${Date.now()}`, { cache: "no-store" }, 12000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const workbook = XLSX.read(await response.arrayBuffer(), { type: "array" });
     const sheet = (name) => XLSX.utils.sheet_to_json(workbook.Sheets[name] || {}, { defval: "" });
-    state.listings = sheet("房源信息");
-    state.rooms = sheet("房间数据库");
-    state.rules = sheet("规则库").filter((row) => String(row["是否启用"] || "TRUE").toUpperCase() !== "FALSE");
-    state.templates = sheet("回复模板库");
-    fillListings();
+    applyDatabase({
+      listings: sheet("房源信息"),
+      rooms: sheet("房间数据库"),
+      rules: sheet("规则库"),
+      templates: sheet("回复模板库")
+    });
     $("#status").textContent = `数据库已更新：${new Date().toLocaleString()}`;
     showRoomOverview();
   } catch (error) {
+    if (window.KW_EMBEDDED_DB) {
+      applyDatabase(window.KW_EMBEDDED_DB);
+      $("#status").textContent = `云端读取失败，已使用内置备份：${error.message}`;
+      showRoomOverview();
+      return;
+    }
     $("#status").textContent = `数据库读取失败：${error.message}`;
   }
+}
+
+function applyDatabase(database) {
+  state.listings = database.listings || [];
+  state.rooms = database.rooms || [];
+  state.rules = (database.rules || []).filter((row) => String(row["是否启用"] || "TRUE").toUpperCase() !== "FALSE");
+  state.templates = database.templates || [];
+  fillListings();
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 function fillListings() {
