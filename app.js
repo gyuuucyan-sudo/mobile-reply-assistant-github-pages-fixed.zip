@@ -287,7 +287,7 @@ function commandTemplates() {
       en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
     } },
     welcome: { label: "不用谢", replies: {
-      zh: "您好，不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
+      zh: "不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
       ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
       en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
     } },
@@ -329,12 +329,12 @@ function fallbackReplies(query) {
       en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
     },
     thanks: {
-      zh: "您好，不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
+      zh: "不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
       ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
       en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
     },
     welcome: {
-      zh: "您好，不客氣。\n這是我們應該做的。\n如有其他需要，請隨時與我們聯繫。",
+      zh: "不客氣。\n這是我們應該做的。\n如有其他需要，請隨時與我們聯繫。",
       ja: "とんでもございません。\nお役に立てて何よりでございます。\nまた何かございましたら、いつでもご連絡くださいませ。",
       en: "You are very welcome.\nWe are glad to be of help.\nPlease feel free to contact us anytime if you need anything else."
     },
