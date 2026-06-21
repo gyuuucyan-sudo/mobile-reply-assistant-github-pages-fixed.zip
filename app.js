@@ -8,7 +8,7 @@ init();
 
 async function init() {
   bind();
-  await loadDatabase();
+  loadDatabase();
 }
 
 function bind() {
@@ -27,9 +27,21 @@ function bind() {
   $("#copy-en").addEventListener("click", () => copy($("#en").value));
 }
 
-async function loadDatabase() {
+function loadDatabase() {
+  if (window.KW_EMBEDDED_DB) {
+    applyDatabase(window.KW_EMBEDDED_DB);
+    $("#status").textContent = "内置数据库已加载，正在后台刷新腾讯云...";
+    showRoomOverview();
+    setTimeout(refreshCloudDatabase, 800);
+    return;
+  }
+  $("#status").textContent = "内置数据库未加载，正在读取腾讯云数据库...";
+  refreshCloudDatabase();
+}
+
+async function refreshCloudDatabase() {
   try {
-    $("#status").textContent = "正在读取腾讯云数据库...";
+    if (!window.XLSX) throw new Error("Excel解析库尚未加载");
     const response = await fetchWithTimeout(`${DB_URL}?_=${Date.now()}`, { cache: "no-store" }, 12000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const workbook = XLSX.read(await response.arrayBuffer(), { type: "array" });
@@ -41,12 +53,10 @@ async function loadDatabase() {
       templates: sheet("回复模板库")
     });
     $("#status").textContent = `数据库已更新：${new Date().toLocaleString()}`;
-    showRoomOverview();
+    if (!$("#query").value.trim()) showRoomOverview();
   } catch (error) {
     if (window.KW_EMBEDDED_DB) {
-      applyDatabase(window.KW_EMBEDDED_DB);
-      $("#status").textContent = `云端读取失败，已使用内置备份：${error.message}`;
-      showRoomOverview();
+      $("#status").textContent = `内置数据库已加载，云端后台刷新失败：${error.message}`;
       return;
     }
     $("#status").textContent = `数据库读取失败：${error.message}`;
@@ -104,6 +114,8 @@ function search(raw) {
 function buildCandidates(query) {
   const results = [];
   const nq = normalize(query);
+  const command = matchCommandTemplate(nq);
+  if (command) results.push({ ...command, score: 9999 });
   for (const item of roomFieldCandidates()) {
     const text = normalize(`${item.key}${item.value}`);
     if (text.includes(nq) || nq.includes(text)) results.push({ ...item, score: 300 + Math.min(text.length, 80) });
@@ -242,12 +254,117 @@ function fallback(query) {
   return { source: "未命中数据库，已生成管家建议", note: "", replies: fallbackReplies(query), score: 1 };
 }
 
-function fallbackReplies(query) {
+function matchCommandTemplate(normalized) {
+  const key = commandIntent(normalized);
+  if (!key) return null;
+  const templates = commandTemplates();
+  return { source: `通用指令：${templates[key].label}`, note: "客服短指令生成，不绑定房源。", replies: templates[key].replies };
+}
+
+function commandIntent(value) {
+  if (!value || value.length > 40) return "";
+  if (/(无法降价|不能降价|不降价|没有优惠|不能优惠|降价|优惠|便宜|折扣|打折|nodiscount|discountno|値引き不可)/i.test(value)) return "discount_reject";
+  if (/(需要照片|请发照片|發照片|发照片|拍照|照片确认|图片|photo|picture|写真)/i.test(value)) return "photo_request";
+  if (/(不能提前入住|无法提前入住|提前入住不行|earlycheckinno|earlycheckinnotpossible|アーリーチェックイン不可)/i.test(value)) return "no_early_checkin";
+  if (/(不能延迟退房|无法延迟退房|延迟退房不行|latecheckoutno|latecheckoutnotpossible|レイトチェックアウト不可)/i.test(value)) return "no_late_checkout";
+  if (/(已确认|确认好了|已经确认|確認しました|confirmed)/i.test(value)) return "confirmed";
+  if (/(确认中|我们确认中|正在确认|稍后回复|等一下|确认后回复|checking|wearechecking|確認中)/i.test(value)) return "checking";
+  if (/(道歉|马上确认|立即确认|抱歉确认|马上查|确认一下|すぐ確認|checknow)/i.test(value)) return "apology_check";
+  if (/(不用谢|不客气|没事|沒事|应该的|どういたしまして|youarewelcome|noproblem)/i.test(value)) return "welcome";
+  return "";
+}
+
+function commandTemplates() {
   return {
-    zh: `您好，非常抱歉造成您的不便。\n關於「${query}」，我們會馬上確認情況並盡快回覆您。\n如有其他問題，歡迎隨時與我們聯繫。`,
-    ja: `この度はご不便をおかけしてしまい、誠に申し訳ございません。\n「${query}」につきまして、すぐに状況を確認し、できるだけ早くご案内いたします。\nご不明な点がございましたら、いつでもご連絡くださいませ。`,
-    en: `We sincerely apologize for the inconvenience.\nRegarding "${query}", we will check the situation right away and get back to you as soon as possible.\nIf you have any further questions, please feel free to contact us.`
+    apology_check: { label: "道歉，马上确认", replies: {
+      zh: "非常抱歉造成您的不便。\n我們會立即確認相關情況，確認後會盡快回覆您。\n感謝您的耐心等候。",
+      ja: "この度はご不便をおかけしてしまい、誠に申し訳ございません。\nすぐに状況を確認し、分かり次第できるだけ早くご返信いたします。\n恐れ入りますが、少々お待ちくださいませ。",
+      en: "We sincerely apologize for the inconvenience.\nWe will check the situation right away and get back to you as soon as possible.\nThank you for your patience."
+    } },
+    discount_reject: { label: "对不起，无法降价", replies: {
+      zh: "您好，感謝您的諮詢。\n非常抱歉，目前價格已依照平台規則及入住日期設定，暫時無法再提供額外折扣。\n感謝您的理解。",
+      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、現在の料金はプラットフォーム上の規定およびご宿泊日程に基づいて設定しているため、追加のお値引きは承っておりません。\n何卒ご理解のほどよろしくお願いいたします。",
+      en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
+    } },
+    welcome: { label: "不用谢", replies: {
+      zh: "您好，不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
+      ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
+      en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
+    } },
+    photo_request: { label: "需要照片 / 请发照片", replies: {
+      zh: "非常抱歉造成您的不便。\n為了方便我們更準確地確認情況，請您拍攝相關位置或問題的照片發送給我們。\n收到後，我們會立即確認並盡快回覆您。\n感謝您的配合。",
+      ja: "この度はご不便をおかけしてしまい、誠に申し訳ございません。\n状況を正確に確認するため、お手数ですが該当箇所または問題が分かるお写真をお送りいただけますでしょうか。\n確認後、できるだけ早く対応いたします。\nご協力いただきありがとうございます。",
+      en: "We sincerely apologize for the inconvenience.\nTo help us confirm the situation accurately, could you please send us a photo of the relevant area or issue?\nOnce we receive it, we will check it right away and get back to you as soon as possible.\nThank you for your cooperation."
+    } },
+    confirmed: { label: "已确认", replies: {
+      zh: "您好，感謝您的耐心等候。\n我們已確認相關情況，將依照確認結果為您安排處理。\n如有其他問題，歡迎隨時與我們聯繫。",
+      ja: "お待ちいただきありがとうございます。\n確認が完了いたしましたので、確認内容に基づき対応を進めてまいります。\nほかにご不明な点がございましたら、いつでもご連絡くださいませ。",
+      en: "Thank you for your patience.\nWe have confirmed the details and will proceed according to the confirmed information.\nIf you have any further questions, please feel free to contact us."
+    } },
+    no_early_checkin: { label: "不能提前入住", replies: {
+      zh: "您好，感謝您的諮詢。\n非常抱歉，由於前一位客人退房後需要清掃與檢查，目前無法安排提前入住。\n請您依照原定入住時間辦理入住。\n感謝您的理解。",
+      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、前のお客様のチェックアウト後に清掃および確認作業が必要なため、現時点ではアーリーチェックインを承ることができません。\n通常のチェックイン時間にお越しいただけますようお願いいたします。\n何卒ご理解のほどよろしくお願いいたします。",
+      en: "Thank you for your inquiry.\nWe are sorry, but we are unable to arrange early check-in, as cleaning and inspection are required after the previous guest checks out.\nPlease check in at the scheduled check-in time.\nThank you for your understanding."
+    } },
+    no_late_checkout: { label: "不能延迟退房", replies: {
+      zh: "您好，感謝您的諮詢。\n非常抱歉，由於退房後需要安排清掃及下一位客人的入住準備，目前無法安排延遲退房。\n請您依照原定退房時間辦理退房。\n感謝您的理解與配合。",
+      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、チェックアウト後に清掃および次のお客様の受け入れ準備が必要なため、現時点ではレイトチェックアウトを承ることができません。\n通常のチェックアウト時間までにご退室いただけますようお願いいたします。\nご理解とご協力をお願いいたします。",
+      en: "Thank you for your inquiry.\nWe are sorry, but we are unable to arrange late check-out, as cleaning and preparation for the next guest are required after check-out.\nPlease check out by the scheduled check-out time.\nThank you for your understanding and cooperation."
+    } },
+    checking: { label: "我们确认中", replies: {
+      zh: "您好，感謝您的聯絡。\n我們正在與負責人確認相關情況，確認後會盡快回覆您。\n讓您久等非常抱歉，感謝您的耐心等候。",
+      ja: "ご連絡いただきありがとうございます。\n現在、担当者に確認を進めております。確認でき次第、できるだけ早くご返信いたします。\nお待たせしてしまい恐れ入りますが、少々お待ちくださいませ。",
+      en: "Thank you for contacting us.\nWe are currently checking the details with the responsible staff and will get back to you as soon as possible.\nWe apologize for keeping you waiting and appreciate your patience."
+    } }
   };
+}
+
+function fallbackReplies(query) {
+  const topic = query || "客人的问题";
+  const intent = fallbackIntent(topic);
+  const replies = {
+    discount: {
+      zh: "您好，感謝您的諮詢。\n非常抱歉，目前價格已依照平台規則及入住日期設定，暫時無法再提供額外折扣。\n感謝您的理解。",
+      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、現在の料金はプラットフォーム上の規定およびご宿泊日程に基づいて設定しているため、追加のお値引きは承っておりません。\n何卒ご理解のほどよろしくお願いいたします。",
+      en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
+    },
+    thanks: {
+      zh: "您好，不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
+      ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
+      en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
+    },
+    welcome: {
+      zh: "您好，不客氣。\n這是我們應該做的。\n如有其他需要，請隨時與我們聯繫。",
+      ja: "とんでもございません。\nお役に立てて何よりでございます。\nまた何かございましたら、いつでもご連絡くださいませ。",
+      en: "You are very welcome.\nWe are glad to be of help.\nPlease feel free to contact us anytime if you need anything else."
+    },
+    checking: {
+      zh: "您好，感謝您的聯絡。\n關於此事，我們會立即與房東及相關負責人確認，確認後會盡快回覆您。\n讓您久等非常抱歉，感謝您的耐心等候。",
+      ja: "ご連絡いただきありがとうございます。\n本件につきまして、オーナーおよび担当者にすぐ確認し、分かり次第できるだけ早くご返信いたします。\nお待たせしてしまい恐れ入りますが、少々お待ちくださいませ。",
+      en: "Thank you for contacting us.\nWe will check this with the owner and the responsible staff right away, and get back to you as soon as we have confirmed the details.\nWe apologize for keeping you waiting and appreciate your patience."
+    },
+    followup: {
+      zh: "非常抱歉讓您久等，也很抱歉造成您的不便。\n我們正在與負責人確認相關情況，確認後會盡快回覆您。\n感謝您的耐心等候。",
+      ja: "お待たせしてしまい、またご不便をおかけしており誠に申し訳ございません。\n現在、担当者に確認を進めております。確認でき次第、できるだけ早くご返信いたします。\n恐れ入りますが、少々お待ちくださいませ。",
+      en: "We sincerely apologize for keeping you waiting and for the inconvenience.\nWe are currently checking the details with the responsible staff and will get back to you as soon as possible.\nThank you for your patience."
+    },
+    apology: {
+      zh: `您好，非常抱歉造成您的不便。\n關於「${topic}」，我們會馬上確認情況並盡快回覆您。\n如有其他問題，歡迎隨時與我們聯繫。`,
+      ja: `この度はご不便をおかけしてしまい、誠に申し訳ございません。\n「${topic}」につきまして、すぐに状況を確認し、できるだけ早くご案内いたします。\nご不明な点がございましたら、いつでもご連絡くださいませ。`,
+      en: `We sincerely apologize for the inconvenience.\nRegarding "${topic}", we will check the situation right away and get back to you as soon as possible.\nIf you have any further questions, please feel free to contact us.`
+    }
+  };
+  return replies[intent] || replies.apology;
+}
+
+function fallbackIntent(text) {
+  const value = normalize(text);
+  if (/(降价|优惠|便宜|折扣|打折|値下げ|割引|安く|discount|cheaper|lowerprice|price)/i.test(value)) return "discount";
+  if (/(谢谢|感謝|感谢|ありがとう|thank|thanks|thx)/i.test(value)) return "thanks";
+  if (/(不用谢|不客气|沒事|没事|どういたしまして|yourewelcome|noworries|noproblem)/i.test(value)) return "welcome";
+  if (/(催|还没回复|還沒回覆|怎么还|怎麼還|什么时候回复|什麼時候回覆|等很久|失望|不满意|不滿意|がっかり|残念|まだですか|返事|disappointed|stillwaiting|waitingtoolong|anyupdate|replysoon)/i.test(value)) return "followup";
+  if (/(核对|確認|确认|房东|屋主|オーナー|確認します|稍后|稍候|later|checkwith|confirmwith|owner)/i.test(value)) return "checking";
+  return "apology";
 }
 
 function applyResult(result) {
