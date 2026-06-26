@@ -1,0 +1,192 @@
+:root {
+  --brand: #ff5a5f;
+  --brand-dark: #e5494e;
+  --soft: #fff5f5;
+  --line: #ffc7ca;
+  --text: #202124;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #fff;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 14px 12px 28px;
+}
+
+.top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  border-left: 5px solid var(--brand);
+  padding-left: 10px;
+}
+
+h1 {
+  margin: 0;
+  color: var(--brand);
+  font-size: clamp(24px, 7vw, 42px);
+  line-height: 1.05;
+}
+
+#status {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+  text-align: right;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+
+#search {
+  grid-column: 1 / -1;
+}
+
+select,
+input,
+button,
+textarea {
+  width: 100%;
+  font: inherit;
+}
+
+select,
+input {
+  height: 46px;
+  border: 2px solid var(--brand);
+  border-radius: 8px;
+  background: #fff;
+  color: #111;
+  padding: 0 11px;
+  font-size: 16px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 3px solid rgba(0, 91, 211, .14);
+  border-color: #005bd3;
+}
+
+.copybar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 9px;
+  margin: 10px 0;
+}
+
+button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 900;
+  font-size: 15px;
+}
+
+button:active { background: var(--brand-dark); }
+
+.candidates,
+.meta {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 9px;
+  margin: 10px 0;
+}
+
+.candidate-title,
+.meta b,
+.answers label {
+  display: block;
+  color: var(--brand);
+  font-weight: 900;
+}
+
+.candidate-title { margin-bottom: 6px; }
+
+.candidate {
+  display: block;
+  width: 100%;
+  margin: 7px 0;
+  padding: 9px;
+  border: 1px solid var(--brand);
+  background: #fff;
+  color: #222;
+  text-align: left;
+}
+
+.candidate strong {
+  display: block;
+  color: #222;
+  font-size: 15px;
+}
+
+.candidate span {
+  display: block;
+  margin-top: 4px;
+  color: #d60000;
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.meta {
+  line-height: 1.45;
+}
+
+.meta div {
+  margin-bottom: 8px;
+}
+
+.meta div:last-child {
+  margin-bottom: 0;
+}
+
+#note-wrap {
+  color: #d60000;
+  font-weight: 900;
+}
+
+.answers label {
+  margin: 12px 0 6px;
+}
+
+textarea {
+  display: block;
+  min-height: 156px;
+  margin-top: 5px;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  padding: 10px;
+  color: #111;
+  background: #fff;
+  font-size: 16px;
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
+@media (min-width: 760px) {
+  .controls {
+    grid-template-columns: 1fr 1fr 2fr;
+  }
+
+  #search {
+    grid-column: auto;
+  }
+}

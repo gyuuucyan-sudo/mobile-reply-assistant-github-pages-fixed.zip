@@ -1,462 +1,519 @@
-const DB_URL = "https://keyboard-warrior-db-1443038288.cos.ap-shanghai.myqcloud.com/%E7%BB%88%E6%9E%81%E7%89%88_%E6%95%B0%E6%8D%AE%E5%BA%93%E4%BF%AE%E6%94%B920260620.before-period-break-20260620-133222.xlsx";
-const state = { listings: [], rooms: [], rules: [], templates: [], listing: null, room: null, result: null };
+(function () {
+  "use strict";
 
-const $ = (selector) => document.querySelector(selector);
-const normalize = (text) => String(text || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+  const DB_URL = "https://keyboard-warrior-db-1443038288.cos.ap-shanghai.myqcloud.com/%E7%BB%88%E6%9E%81%E7%89%88_%E6%95%B0%E6%8D%AE%E5%BA%93%E4%BF%AE%E6%94%B920260620.before-period-break-20260620-133222.xlsx";
+  const SHORTAGE_WORDS = ["没", "没有", "没了", "用完", "用完了", "缺少", "不足", "missing", "empty", "no", "ない", "ありません", "なくなった", "足りない"];
+  const SUPPLY_WORDS = ["洗发水", "洗髮水", "shampoo", "シャンプー", "护发素", "護髮素", "conditioner", "沐浴露", "bodysoap", "bodywash", "毛巾", "浴巾", "towel", "纸", "toiletpaper", "垃圾袋"];
+  const state = { database: null, listing: null, room: null, matched: null };
 
-init();
+  const $ = (selector) => document.querySelector(selector);
 
-async function init() {
-  bind();
-  loadDatabase();
-}
-
-function bind() {
-  $("#listing").addEventListener("change", () => {
-    state.listing = state.listings.find((item) => item["房源ID"] === $("#listing").value) || state.listings[0];
-    fillRooms();
-    showRoomOverview();
+  document.addEventListener("DOMContentLoaded", () => {
+    $("#listing").addEventListener("change", onListingChange);
+    $("#room").addEventListener("change", onRoomChange);
+    $("#search").addEventListener("input", debounce(runSearch, 90));
+    $("#copy-ja").addEventListener("click", () => copyText($("#ja").value, "日语"));
+    $("#copy-zh").addEventListener("click", () => copyText($("#zh").value, "中文"));
+    $("#copy-en").addEventListener("click", () => copyText($("#en").value, "英语"));
+    loadDatabase();
   });
-  $("#room").addEventListener("change", () => {
-    state.room = currentRooms().find((item) => item["房间号"] === $("#room").value) || currentRooms()[0];
-    showRoomOverview();
-  });
-  $("#query").addEventListener("input", debounce(() => search($("#query").value), 120));
-  $("#copy-ja").addEventListener("click", () => copy($("#ja").value));
-  $("#copy-zh").addEventListener("click", () => copy($("#zh").value));
-  $("#copy-en").addEventListener("click", () => copy($("#en").value));
-}
 
-function loadDatabase() {
-  if (window.KW_EMBEDDED_DB) {
-    applyDatabase(window.KW_EMBEDDED_DB);
-    $("#status").textContent = "内置数据库已加载，正在后台刷新腾讯云...";
+  async function loadDatabase() {
+    setStatus("正在读取信息库...");
+    try {
+      const database = await fetchCloudDatabase();
+      state.database = database;
+      setStatus(`已读取腾讯云：${new Date(database.loadedAt).toLocaleString()}`);
+    } catch (error) {
+      if (!window.KW_EMBEDDED_DATABASE) throw error;
+      state.database = window.KW_EMBEDDED_DATABASE;
+      setStatus(`网络读取失败，已使用内置数据：${new Date(state.database.loadedAt).toLocaleString()}`);
+    }
+    setupSelectors();
     showRoomOverview();
-    setTimeout(refreshCloudDatabase, 800);
-    return;
   }
-  $("#status").textContent = "内置数据库未加载，正在读取腾讯云数据库...";
-  refreshCloudDatabase();
-}
 
-async function refreshCloudDatabase() {
-  try {
-    if (!window.XLSX) throw new Error("Excel解析库尚未加载");
-    const response = await fetchWithTimeout(`${DB_URL}?_=${Date.now()}`, { cache: "no-store" }, 12000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const workbook = XLSX.read(await response.arrayBuffer(), { type: "array" });
-    const sheet = (name) => XLSX.utils.sheet_to_json(workbook.Sheets[name] || {}, { defval: "" });
-    applyDatabase({
-      listings: sheet("房源信息"),
-      rooms: sheet("房间数据库"),
-      rules: sheet("规则库"),
-      templates: sheet("回复模板库")
+  async function fetchCloudDatabase() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(`${DB_URL}?_=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return parseWorkbookBytes(bytes, Date.now());
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function setupSelectors() {
+    const listingSelect = $("#listing");
+    listingSelect.innerHTML = "";
+    state.database.listings.forEach((listing, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = listing["房源名"] || listing["房源ID"] || `房源${index + 1}`;
+      listingSelect.appendChild(option);
     });
-    $("#status").textContent = `数据库已更新：${new Date().toLocaleString()}`;
-    if (!$("#query").value.trim()) showRoomOverview();
-  } catch (error) {
-    if (window.KW_EMBEDDED_DB) {
-      $("#status").textContent = `内置数据库已加载，云端后台刷新失败：${error.message}`;
+    listingSelect.value = "0";
+    onListingChange();
+  }
+
+  function onListingChange() {
+    const index = Number($("#listing").value || 0);
+    state.listing = state.database.listings[index] || null;
+    const rooms = currentRooms();
+    const roomSelect = $("#room");
+    roomSelect.innerHTML = "";
+    rooms.forEach((room, roomIndex) => {
+      const option = document.createElement("option");
+      option.value = String(roomIndex);
+      option.textContent = room["房间号"] || room["平台显示名称/房型"] || `房间${roomIndex + 1}`;
+      roomSelect.appendChild(option);
+    });
+    roomSelect.value = "0";
+    onRoomChange();
+  }
+
+  function onRoomChange() {
+    state.room = currentRooms()[Number($("#room").value || 0)] || null;
+    if ($("#search").value.trim()) runSearch();
+    else showRoomOverview();
+  }
+
+  function currentRooms() {
+    if (!state.listing) return [];
+    const listingId = normalize(state.listing["房源ID"]);
+    return state.database.rooms.filter((room) => normalize(room["房源ID"]) === listingId);
+  }
+
+  function runSearch() {
+    const text = cleanText($("#search").value);
+    if (!text) {
+      showRoomOverview();
       return;
     }
-    $("#status").textContent = `数据库读取失败：${error.message}`;
+    const result = matchDatabase(text, { allowCommand: true });
+    render(result.replies, result.source, result.note);
+    renderCandidates(text, result);
   }
-}
 
-function applyDatabase(database) {
-  state.listings = database.listings || [];
-  state.rooms = database.rooms || [];
-  state.rules = (database.rules || []).filter((row) => String(row["是否启用"] || "TRUE").toUpperCase() !== "FALSE");
-  state.templates = database.templates || [];
-  fillListings();
-}
-
-function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
-}
-
-function fillListings() {
-  $("#listing").innerHTML = state.listings.map((item) => `<option value="${escapeHtml(item["房源ID"])}">${escapeHtml(item["房源名"])}</option>`).join("");
-  state.listing = state.listings[0];
-  fillRooms();
-}
-
-function fillRooms() {
-  const rooms = currentRooms();
-  $("#room").innerHTML = rooms.map((item) => `<option value="${escapeHtml(item["房间号"])}">${escapeHtml(item["房间号"])}</option>`).join("");
-  state.room = rooms[0];
-}
-
-function currentRooms() {
-  return state.rooms.filter((item) => !state.listing || item["房源ID"] === state.listing["房源ID"]);
-}
-
-function showRoomOverview() {
-  $("#query").value = "";
-  const result = roomOverview();
-  applyResult(result);
-  showCandidates([]);
-}
-
-function search(raw) {
-  const query = String(raw || "").trim();
-  if (!query) {
-    showRoomOverview();
-    return;
+  function showRoomOverview() {
+    const result = roomOverview();
+    render(result.replies, result.source, result.note);
+    $("#candidates").hidden = true;
+    $("#candidates").innerHTML = "";
   }
-  const candidates = buildCandidates(query);
-  showCandidates(candidates);
-  applyResult(candidates[0] || fallback(query));
-}
 
-function buildCandidates(query) {
-  const results = [];
-  const nq = normalize(query);
-  const command = matchCommandTemplate(nq);
-  if (command) results.push({ ...command, score: 9999 });
-  for (const item of roomFieldCandidates()) {
-    const text = normalize(`${item.key}${item.value}`);
-    if (text.includes(nq) || nq.includes(text)) results.push({ ...item, score: 300 + Math.min(text.length, 80) });
+  function roomOverview() {
+    if (!state.listing) {
+      return { source: "房间数据库：未选择房源", note: "请选择房源和房间。", replies: {
+        zh: "請先選擇房源和房間。",
+        ja: "施設とお部屋を選択してください。",
+        en: "Please select a listing and room."
+      } };
+    }
+    if (!state.room) {
+      return { source: `房间数据库：${state.listing["房源名"]}`, note: "已选择房源，但未选择房间。", replies: {
+        zh: `已選擇房源：${state.listing["房源名"]}`,
+        ja: `施設を選択しました：${state.listing["房源名"]}`,
+        en: `Listing selected: ${state.listing["房源名"]}`
+      } };
+    }
+    return { source: `房间数据库：${roomLabel("zh")}`, note: "当前房间的房间数据库完整信息。", replies: {
+      zh: buildRoomText("zh"),
+      ja: buildRoomText("ja"),
+      en: buildRoomText("en")
+    } };
   }
-  for (const rule of state.rules) {
-    if (!ruleApplies(rule)) continue;
-    const score = scoreRule(query, rule);
-    if (score <= 0) continue;
-    const template = findTemplate(rule["分类"]);
-    results.push({
-      source: `数据库规则：${rule["分类"]}`,
-      note: rule["内部备注"] || (template && template["内部备注"]) || "",
-      replies: template ? fillTemplate(template) : fallbackReplies(rule["原始规则逻辑"] || rule["分类"]),
-      score
+
+  function matchDatabase(text, options = {}) {
+    const normalized = normalize(text);
+    if (!normalized) return { source: "未输入有效内容", replies: fallbackReply("") };
+    const command = options.allowCommand ? matchCommandTemplate(normalized) : null;
+    if (command) return command;
+    const dynamic = matchDynamic(normalized);
+    if (dynamic) return dynamic;
+    const ranked = state.database.rules.map((rule) => ({ rule, score: scoreRule(rule, normalized) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || scopeRank(b.rule) - scopeRank(a.rule) || Number(b.rule["优先级"] || 0) - Number(a.rule["优先级"] || 0));
+    if (ranked.length) {
+      const rule = ranked[0].rule;
+      const template = findTemplate(rule);
+      return { source: `数据库规则：${rule["分类"]}`, note: rule["内部备注"] || (template && template["内部备注"]) || "", replies: template ? fillTemplate(template) : fallbackReply(rule["原始规则逻辑"] || rule["分类"]) };
+    }
+    return { source: "未命中数据库，已生成管家建议", replies: fallbackReply(text) };
+  }
+
+  function matchCommandTemplate(normalized) {
+    const commands = state.database.commands || [];
+    if (!commands.length || normalized.length > 80) return null;
+    const ranked = commands.map((command) => ({ command, score: scoreCommand(command, normalized) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || Number(b.command["优先级"] || 0) - Number(a.command["优先级"] || 0));
+    if (!ranked.length) return null;
+    const row = ranked[0].command;
+    return { source: `通用指令：${row["指令名"] || "客服短指令"}`, note: row["内部备注"] || "客服短指令生成，不绑定房源。", replies: {
+      zh: row["繁体中文回复"] || "",
+      ja: row["日语回复"] || "",
+      en: row["英语回复"] || ""
+    } };
+  }
+
+  function scoreCommand(command, normalized) {
+    const words = [command["指令名"], command["搜索词/触发词"]].flatMap(splitKeywords).map((word) => normalize(word)).filter(Boolean);
+    let score = 0;
+    for (const word of words) {
+      if (normalized === word) score = Math.max(score, 1000);
+      else if (normalized.includes(word) && (word.length >= 2 || isCjkKeyword(word))) score = Math.max(score, 650 + Math.min(word.length, 40));
+      else if (word.includes(normalized) && (normalized.length >= 2 || isCjkKeyword(normalized))) score = Math.max(score, 360 + Math.min(normalized.length, 40));
+    }
+    return score ? score + Number(command["优先级"] || 0) / 10 : 0;
+  }
+
+  function matchDynamic(normalized) {
+    const fixed = [
+      ["wifi", ["wifi", "无线", "网络", "internet", "ネット"]],
+      ["room_area", ["面积", "面積", "size", "広さ"]],
+      ["room_floor", ["楼层", "几楼", "floor", "階", "何階"]],
+      ["bedding", ["床", "bed", "ベッド", "寝具"]],
+      ["max_guests", ["几个人", "多少人", "capacity", "何名"]]
+    ];
+    for (const [scope, words] of fixed) {
+      if (!words.some((word) => normalized.includes(normalize(word)))) continue;
+      const template = state.database.templates.find((row) => normalize(row["适用范围"]) === normalize(scope));
+      if (template) return { source: `房间数据库：${template["分类"]}`, note: template["内部备注"] || "", replies: fillTemplate(template) };
+    }
+    return matchRoomField(normalized);
+  }
+
+  function matchRoomField(normalized) {
+    if (!state.room) return null;
+    for (const [key, value] of Object.entries(state.room)) {
+      if (key === "房源ID" || isBlankHeader(key) || !value) continue;
+      const pieces = [key, headerName(key, "zh"), headerName(key, "ja"), headerName(key, "en"), value].flatMap(splitKeywords).map((item) => normalize(expandText(item)));
+      if (!pieces.some((piece) => piece && (piece.includes(normalized) || normalized.includes(piece)))) continue;
+      return { source: `房间数据库：${headerName(key, "zh")}`, note: "已从当前房间数据库字段读取。", replies: {
+        zh: fieldText(key, value, "zh"),
+        ja: fieldText(key, value, "ja"),
+        en: fieldText(key, value, "en")
+      } };
+    }
+    return null;
+  }
+
+  function renderCandidates(text) {
+    const box = $("#candidates");
+    const normalized = normalize(text);
+    const candidates = [];
+    const command = matchCommandTemplate(normalized);
+    if (command) candidates.push({ ...command, score: 9999 });
+    const dynamic = matchDynamic(normalized);
+    if (dynamic) candidates.push(dynamic);
+    for (const rule of state.database.rules) {
+      const score = scoreRule(rule, normalized) || listRelevanceScore(rule, normalized);
+      if (!score) continue;
+      const template = findTemplate(rule);
+      candidates.push({ source: `数据库规则：${rule["分类"]}`, note: rule["内部备注"] || (template && template["内部备注"]) || "", replies: template ? fillTemplate(template) : fallbackReply(rule["原始规则逻辑"] || rule["分类"]), score });
+    }
+    const unique = candidates.sort((a, b) => (b.score || 0) - (a.score || 0))
+      .filter((item, index, array) => array.findIndex((candidate) => candidate.source === item.source) === index)
+      .slice(0, 25);
+    if (!text || !unique.length) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = `<div class="candidate-title">候选回答</div>`;
+    unique.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "candidate";
+      button.innerHTML = `<strong>${escapeHtml(item.source)}</strong>${item.note ? `<span>${escapeHtml(item.note)}</span>` : ""}`;
+      button.addEventListener("click", () => render(item.replies, item.source, item.note));
+      box.appendChild(button);
     });
   }
-  return results.sort((a, b) => b.score - a.score).slice(0, 12);
-}
 
-function roomFieldCandidates() {
-  if (!state.room) return [];
-  return Object.entries(state.room)
-    .filter(([key, value]) => value && !["房源ID", "房间号", "平台显示名称/房型", "__col_18"].includes(key))
-    .map(([key, value]) => ({
-      source: `房间数据库：${headerName(key, "zh")}`,
-      note: "已从当前房间数据库字段读取。",
-      key,
-      value,
-      replies: roomFieldReply(key, value)
-    }));
-}
+  function scoreRule(rule, normalized) {
+    if (!ruleApplies(rule)) return 0;
+    const category = String(rule["分类"] || "");
+    const shortageSupply = hasShortage(normalized) && hasSupply(normalized);
+    if (shortageSupply && /基础备品/.test(category)) return 0;
+    if (/接送机/.test(category) && /^airport$|^空港$/.test(normalized)) return 0;
+    let score = phraseScore(normalized, normalize(expandText(rule["分类"])), 130);
+    for (const keyword of splitKeywords(rule["关键词"])) score += phraseScore(normalized, normalize(expandText(keyword)), 180);
+    if (/耗品不足|缺少|不足/.test(category) && shortageSupply) score += 360;
+    if (/接送机/.test(category) && ["接送机", "接机", "机场接送", "airporttransfer", "空港送迎"].some((word) => normalized.includes(normalize(word)))) score += 240;
+    if (/交通|车站|駅|station/i.test(category) && ["车站", "車站", "多远", "多久", "station", "walk", "distance", "駅", "何分"].some((word) => normalized.includes(normalize(word)))) score += 240;
+    return score ? score + Number(rule["优先级"] || 0) / 10 + scopeRank(rule) * 30 : 0;
+  }
 
-function roomOverview() {
-  if (!state.room) return fallback("未选择房间");
-  return {
-    source: `房间数据库：${roomLabel("zh")}`,
-    note: "页面打开默认显示当前房间的房间数据库完整信息。",
-    replies: {
-      zh: roomOverviewText("zh"),
-      ja: roomOverviewText("ja"),
-      en: roomOverviewText("en")
+  function listRelevanceScore(rule, normalized) {
+    if (!ruleApplies(rule)) return 0;
+    const pieces = [rule["分类"], rule["关键词"], rule["内部备注"], rule["原始规则逻辑"]].flatMap(splitKeywords).map((item) => normalize(expandText(item)));
+    return pieces.some((piece) => piece && (piece.includes(normalized) || normalized.includes(piece))) ? 20 + scopeRank(rule) * 5 : 0;
+  }
+
+  function phraseScore(query, keyword, base) {
+    if (!query || !keyword) return 0;
+    if (query === keyword) return base + 120;
+    if (query.includes(keyword) && (keyword.length >= 2 || isCjkKeyword(keyword))) return Math.floor(base / 2);
+    if (keyword.includes(query) && (query.length >= 2 || isCjkKeyword(query))) return Math.floor(base / 4);
+    return 0;
+  }
+
+  function ruleApplies(rule) {
+    const listingId = normalize(rule["房源ID"]);
+    const roomNo = normalize(rule["房间号"]);
+    if (listingId && !state.listing) return false;
+    if (listingId && listingId !== normalize(state.listing["房源ID"])) return false;
+    if (roomNo && !state.room) return false;
+    if (roomNo && roomNo !== normalize(state.room["房间号"])) return false;
+    if (isExclusiveRule(rule) && !state.listing) return false;
+    if (state.listing && mentionsOtherListing(rule)) return false;
+    return true;
+  }
+
+  function isExclusiveRule(rule) {
+    return Boolean(normalize(rule["房源ID"]) || normalize(rule["房间号"]) || /房源专属|房间专属|专属/.test(String(rule["适用范围"] || "")) || mentionsAnyListing(rule));
+  }
+
+  function mentionsAnyListing(rule) {
+    const text = normalize([rule["适用范围"], rule["分类"], rule["关键词"], rule["内部备注"], rule["原始规则逻辑"]].join(" "));
+    return (state.database.listings || []).some((listing) => [listing["房源ID"], listing["房源名"], listing["平台名称关键词"]]
+      .flatMap(splitKeywords).map(normalize).filter(Boolean).some((name) => text.includes(name)));
+  }
+
+  function mentionsOtherListing(rule) {
+    const text = normalize([rule["适用范围"], rule["分类"], rule["关键词"], rule["内部备注"], rule["原始规则逻辑"]].join(" "));
+    const currentId = normalize(state.listing && state.listing["房源ID"]);
+    for (const listing of state.database.listings || []) {
+      const id = normalize(listing["房源ID"]);
+      if (!id || id === currentId) continue;
+      const names = [listing["房源ID"], listing["房源名"], listing["平台名称关键词"]].flatMap(splitKeywords).map(normalize).filter(Boolean);
+      if (names.some((name) => name && text.includes(name))) return true;
     }
-  };
-}
-
-function roomOverviewText(language) {
-  const lines = [roomLine(language)];
-  for (const [key, value] of Object.entries(state.room || {})) {
-    if (!value || key.startsWith("__") || key === "房源ID") continue;
-    lines.push(`${headerName(key, language)}：${translateRoom(value, language)}`);
+    return false;
   }
-  return lines.join("\n");
-}
 
-function roomFieldReply(key, value) {
-  return {
-    zh: `${roomLine("zh")}\n${headerName(key, "zh")}：\n${translateRoom(value, "zh")}\n如有其他問題，歡迎隨時與我們聯繫。`,
-    ja: `${roomLine("ja")}\n${headerName(key, "ja")}：\n${translateRoom(value, "ja")}\nご不明な点がございましたら、お気軽にご連絡くださいませ。`,
-    en: `${roomLine("en")}\n${headerName(key, "en")}:\n${translateRoom(value, "en")}\nIf you have any further questions, please feel free to contact us.`
-  };
-}
-
-function fillTemplate(template) {
-  const fields = {
-    wifi_info: translateRoom(state.room && state.room["WiFi ID和密码"], "zh"),
-    floor: translateRoom(state.room && state.room["楼层/单元"], "zh"),
-    bedding: translateRoom(state.room && state.room["床具类型与数量"], "zh"),
-    room_name: roomLabel("zh")
-  };
-  return {
-    zh: applyFields(template["繁体中文回复"], fields),
-    ja: applyFields(template["日语回复"], { ...fields, wifi_info: translateRoom(state.room && state.room["WiFi ID和密码"], "ja"), bedding: translateRoom(state.room && state.room["床具类型与数量"], "ja"), room_name: roomLabel("ja") }),
-    en: applyFields(template["英语回复"], { ...fields, wifi_info: translateRoom(state.room && state.room["WiFi ID和密码"], "en"), bedding: translateRoom(state.room && state.room["床具类型与数量"], "en"), room_name: roomLabel("en") })
-  };
-}
-
-function scoreRule(query, rule) {
-  const q = normalize(query);
-  const words = String(rule["关键词"] || "").split(/[,，、\n]/).map(normalize).filter(Boolean);
-  let score = 0;
-  for (const word of words) {
-    if (q === word) score = Math.max(score, 220);
-    else if (q.includes(word) || word.includes(q)) score = Math.max(score, 120);
+  function scopeRank(rule) {
+    if (normalize(rule["房间号"])) return 2;
+    if (normalize(rule["房源ID"]) || /房源专属|专属/.test(String(rule["适用范围"] || ""))) return 1;
+    return 0;
   }
-  return score ? score + Number(rule["优先级"] || 0) : 0;
-}
 
-function ruleApplies(rule) {
-  const listingId = normalize(rule["房源ID"]);
-  const roomNo = normalize(rule["房间号"]);
-  if (listingId && !state.listing) return false;
-  if (listingId && listingId !== normalize(state.listing["房源ID"])) return false;
-  if (roomNo && !state.room) return false;
-  if (roomNo && roomNo !== normalize(state.room["房间号"])) return false;
-  if (isExclusiveRule(rule) && !state.listing) return false;
-  if (state.listing && mentionsOtherListing(rule)) return false;
-  return true;
-}
-
-function isExclusiveRule(rule) {
-  return Boolean(normalize(rule["房源ID"]) || normalize(rule["房间号"]) || /房源专属|房间专属|专属/.test(String(rule["适用范围"] || "")) || mentionsAnyListing(rule));
-}
-
-function mentionsAnyListing(rule) {
-  const text = normalize([rule["适用范围"], rule["分类"], rule["关键词"], rule["内部备注"], rule["原始规则逻辑"]].join(" "));
-  return (state.listings || []).some((listing) => [listing["房源ID"], listing["房源名"], listing["平台名称关键词"]]
-    .join(",")
-    .split(/[,，、\n]/)
-    .map(normalize)
-    .filter(Boolean)
-    .some((name) => text.includes(name)));
-}
-
-function mentionsOtherListing(rule) {
-  const text = normalize([rule["适用范围"], rule["分类"], rule["关键词"], rule["内部备注"], rule["原始规则逻辑"]].join(" "));
-  const currentId = normalize(state.listing && state.listing["房源ID"]);
-  for (const listing of state.listings || []) {
-    const id = normalize(listing["房源ID"]);
-    if (!id || id === currentId) continue;
-    const names = [listing["房源ID"], listing["房源名"], listing["平台名称关键词"]]
-      .join(",")
-      .split(/[,，、\n]/)
-      .map(normalize)
-      .filter(Boolean);
-    if (names.some((name) => name && text.includes(name))) return true;
+  function findTemplate(rule) {
+    const category = normalize(rule["分类"]);
+    return state.database.templates.find((row) => normalize(row["分类"]) === category)
+      || state.database.templates.find((row) => normalize(row["适用范围"]) === category)
+      || state.database.templates.find((row) => category.includes(normalize(row["分类"])) || normalize(row["分类"]).includes(category));
   }
-  return false;
-}
 
-function findTemplate(category) {
-  const key = normalize(category);
-  return state.templates.find((item) => normalize(`${item["适用范围"]}${item["分类"]}`).includes(key));
-}
+  function fillTemplate(template) {
+    const fields = dynamicFields();
+    return {
+      zh: applyFields(template["繁体中文回复"], fields.zh),
+      ja: applyFields(template["日语回复"], fields.ja),
+      en: applyFields(template["英语回复"], fields.en)
+    };
+  }
 
-function fallback(query) {
-  return { source: "未命中数据库，已生成管家建议", note: "", replies: fallbackReplies(query), score: 1 };
-}
+  function dynamicFields() {
+    return { zh: baseFields("zh"), ja: baseFields("ja"), en: baseFields("en") };
+  }
 
-function matchCommandTemplate(normalized) {
-  const key = commandIntent(normalized);
-  if (!key) return null;
-  const templates = commandTemplates();
-  return { source: `通用指令：${templates[key].label}`, note: "客服短指令生成，不绑定房源。", replies: templates[key].replies };
-}
+  function baseFields(language) {
+    return {
+      wifi_info: withRoom(state.room && state.room["WiFi ID和密码"], language),
+      area: inlineRoom(state.room && state.room["面积㎡"], language),
+      floor: inlineRoom(translateRoom(state.room && state.room["楼层/单元"], language), language),
+      bedding: withRoom(translateRoom(state.room && state.room["床具类型与数量"], language), language),
+      max_guests: inlineRoom(translateRoom(state.room && state.room["最大入住人数"], language), language),
+      room_facilities: withRoom(facilityLines(language), language)
+    };
+  }
 
-function commandIntent(value) {
-  if (!value || value.length > 40) return "";
-  if (/(无法降价|不能降价|不降价|没有优惠|不能优惠|降价|优惠|便宜|折扣|打折|nodiscount|discountno|値引き不可)/i.test(value)) return "discount_reject";
-  if (/(需要照片|请发照片|發照片|发照片|拍照|照片确认|图片|photo|picture|写真)/i.test(value)) return "photo_request";
-  if (/(不能提前入住|无法提前入住|提前入住不行|earlycheckinno|earlycheckinnotpossible|アーリーチェックイン不可)/i.test(value)) return "no_early_checkin";
-  if (/(不能延迟退房|无法延迟退房|延迟退房不行|latecheckoutno|latecheckoutnotpossible|レイトチェックアウト不可)/i.test(value)) return "no_late_checkout";
-  if (/(已确认|确认好了|已经确认|確認しました|confirmed)/i.test(value)) return "confirmed";
-  if (/(确认中|我们确认中|正在确认|稍后回复|等一下|确认后回复|checking|wearechecking|確認中)/i.test(value)) return "checking";
-  if (/(道歉|马上确认|立即确认|抱歉确认|马上查|确认一下|すぐ確認|checknow)/i.test(value)) return "apology_check";
-  if (/(不用谢|不客气|没事|沒事|应该的|どういたしまして|youarewelcome|noproblem)/i.test(value)) return "welcome";
-  return "";
-}
+  function facilityLines(language) {
+    const excluded = new Set(["房源ID", "房间号", "平台显示名称/房型", "面积㎡", "楼层/单元", "最大入住人数", "床具类型与数量", "WiFi ID和密码"]);
+    return Object.entries(state.room || {})
+      .filter(([key, value]) => !excluded.has(key) && !isBlankHeader(key) && value)
+      .map(([key, value]) => `${headerName(key, language)}：${translateRoom(value, language)}`)
+      .join("\n");
+  }
 
-function commandTemplates() {
-  return {
-    apology_check: { label: "道歉，马上确认", replies: {
-      zh: "非常抱歉造成您的不便。\n我們會立即確認相關情況，確認後會盡快回覆您。\n感謝您的耐心等候。",
-      ja: "この度はご不便をおかけしてしまい、誠に申し訳ございません。\nすぐに状況を確認し、分かり次第できるだけ早くご返信いたします。\n恐れ入りますが、少々お待ちくださいませ。",
-      en: "We sincerely apologize for the inconvenience.\nWe will check the situation right away and get back to you as soon as possible.\nThank you for your patience."
-    } },
-    discount_reject: { label: "对不起，无法降价", replies: {
-      zh: "您好，感謝您的諮詢。\n非常抱歉，目前價格已依照平台規則及入住日期設定，暫時無法再提供額外折扣。\n感謝您的理解。",
-      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、現在の料金はプラットフォーム上の規定およびご宿泊日程に基づいて設定しているため、追加のお値引きは承っておりません。\n何卒ご理解のほどよろしくお願いいたします。",
-      en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
-    } },
-    welcome: { label: "不用谢", replies: {
-      zh: "不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
-      ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
-      en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
-    } },
-    photo_request: { label: "需要照片 / 请发照片", replies: {
-      zh: "非常抱歉造成您的不便。\n為了方便我們更準確地確認情況，請您拍攝相關位置或問題的照片發送給我們。\n收到後，我們會立即確認並盡快回覆您。\n感謝您的配合。",
-      ja: "この度はご不便をおかけしてしまい、誠に申し訳ございません。\n状況を正確に確認するため、お手数ですが該当箇所または問題が分かるお写真をお送りいただけますでしょうか。\n確認後、できるだけ早く対応いたします。\nご協力いただきありがとうございます。",
-      en: "We sincerely apologize for the inconvenience.\nTo help us confirm the situation accurately, could you please send us a photo of the relevant area or issue?\nOnce we receive it, we will check it right away and get back to you as soon as possible.\nThank you for your cooperation."
-    } },
-    confirmed: { label: "已确认", replies: {
-      zh: "您好，感謝您的耐心等候。\n我們已確認相關情況，將依照確認結果為您安排處理。\n如有其他問題，歡迎隨時與我們聯繫。",
-      ja: "お待ちいただきありがとうございます。\n確認が完了いたしましたので、確認内容に基づき対応を進めてまいります。\nほかにご不明な点がございましたら、いつでもご連絡くださいませ。",
-      en: "Thank you for your patience.\nWe have confirmed the details and will proceed according to the confirmed information.\nIf you have any further questions, please feel free to contact us."
-    } },
-    no_early_checkin: { label: "不能提前入住", replies: {
-      zh: "您好，感謝您的諮詢。\n非常抱歉，由於前一位客人退房後需要清掃與檢查，目前無法安排提前入住。\n請您依照原定入住時間辦理入住。\n感謝您的理解。",
-      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、前のお客様のチェックアウト後に清掃および確認作業が必要なため、現時点ではアーリーチェックインを承ることができません。\n通常のチェックイン時間にお越しいただけますようお願いいたします。\n何卒ご理解のほどよろしくお願いいたします。",
-      en: "Thank you for your inquiry.\nWe are sorry, but we are unable to arrange early check-in, as cleaning and inspection are required after the previous guest checks out.\nPlease check in at the scheduled check-in time.\nThank you for your understanding."
-    } },
-    no_late_checkout: { label: "不能延迟退房", replies: {
-      zh: "您好，感謝您的諮詢。\n非常抱歉，由於退房後需要安排清掃及下一位客人的入住準備，目前無法安排延遲退房。\n請您依照原定退房時間辦理退房。\n感謝您的理解與配合。",
-      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、チェックアウト後に清掃および次のお客様の受け入れ準備が必要なため、現時点ではレイトチェックアウトを承ることができません。\n通常のチェックアウト時間までにご退室いただけますようお願いいたします。\nご理解とご協力をお願いいたします。",
-      en: "Thank you for your inquiry.\nWe are sorry, but we are unable to arrange late check-out, as cleaning and preparation for the next guest are required after check-out.\nPlease check out by the scheduled check-out time.\nThank you for your understanding and cooperation."
-    } },
-    checking: { label: "我们确认中", replies: {
-      zh: "您好，感謝您的聯絡。\n我們正在與負責人確認相關情況，確認後會盡快回覆您。\n讓您久等非常抱歉，感謝您的耐心等候。",
-      ja: "ご連絡いただきありがとうございます。\n現在、担当者に確認を進めております。確認でき次第、できるだけ早くご返信いたします。\nお待たせしてしまい恐れ入りますが、少々お待ちくださいませ。",
-      en: "Thank you for contacting us.\nWe are currently checking the details with the responsible staff and will get back to you as soon as possible.\nWe apologize for keeping you waiting and appreciate your patience."
-    } }
-  };
-}
+  function buildRoomText(language) {
+    const lines = [language === "en" ? `Room: ${roomLabel(language)}` : language === "ja" ? `お部屋：${roomLabel(language)}` : `房源/房間：${roomLabel(language)}`];
+    for (const [key, value] of Object.entries(state.room || {})) {
+      if (key === "房源ID" || isBlankHeader(key) || !value) continue;
+      lines.push(`${headerName(key, language)}：${translateRoom(value, language)}`);
+    }
+    return lines.join("\n");
+  }
 
-function fallbackReplies(query) {
-  const topic = query || "客人的问题";
-  const intent = fallbackIntent(topic);
-  const replies = {
-    discount: {
-      zh: "您好，感謝您的諮詢。\n非常抱歉，目前價格已依照平台規則及入住日期設定，暫時無法再提供額外折扣。\n感謝您的理解。",
-      ja: "お問い合わせいただきありがとうございます。\n恐れ入りますが、現在の料金はプラットフォーム上の規定およびご宿泊日程に基づいて設定しているため、追加のお値引きは承っておりません。\n何卒ご理解のほどよろしくお願いいたします。",
-      en: "Thank you for your inquiry.\nWe are sorry, but the current rate is set according to the platform rules and your stay dates, so we are unable to offer any additional discount.\nThank you for your understanding."
-    },
-    thanks: {
-      zh: "不客氣。\n如有其他問題，歡迎隨時與我們聯繫。\n祝您住宿愉快。",
-      ja: "とんでもございません。\nほかにご不明な点がございましたら、いつでもお気軽にご連絡くださいませ。\n快適にお過ごしいただけますよう努めてまいります。",
-      en: "You are very welcome.\nIf you have any further questions, please feel free to contact us at any time.\nWe hope you have a pleasant stay."
-    },
-    welcome: {
-      zh: "不客氣。\n這是我們應該做的。\n如有其他需要，請隨時與我們聯繫。",
-      ja: "とんでもございません。\nお役に立てて何よりでございます。\nまた何かございましたら、いつでもご連絡くださいませ。",
-      en: "You are very welcome.\nWe are glad to be of help.\nPlease feel free to contact us anytime if you need anything else."
-    },
-    checking: {
-      zh: "您好，感謝您的聯絡。\n關於此事，我們會立即與房東及相關負責人確認，確認後會盡快回覆您。\n讓您久等非常抱歉，感謝您的耐心等候。",
-      ja: "ご連絡いただきありがとうございます。\n本件につきまして、オーナーおよび担当者にすぐ確認し、分かり次第できるだけ早くご返信いたします。\nお待たせしてしまい恐れ入りますが、少々お待ちくださいませ。",
-      en: "Thank you for contacting us.\nWe will check this with the owner and the responsible staff right away, and get back to you as soon as we have confirmed the details.\nWe apologize for keeping you waiting and appreciate your patience."
-    },
-    followup: {
-      zh: "非常抱歉讓您久等，也很抱歉造成您的不便。\n我們正在與負責人確認相關情況，確認後會盡快回覆您。\n感謝您的耐心等候。",
-      ja: "お待たせしてしまい、またご不便をおかけしており誠に申し訳ございません。\n現在、担当者に確認を進めております。確認でき次第、できるだけ早くご返信いたします。\n恐れ入りますが、少々お待ちくださいませ。",
-      en: "We sincerely apologize for keeping you waiting and for the inconvenience.\nWe are currently checking the details with the responsible staff and will get back to you as soon as possible.\nThank you for your patience."
-    },
-    apology: {
+  function fieldText(key, value, language) {
+    const head = language === "en" ? `Room: ${roomLabel(language)}` : language === "ja" ? `お部屋：${roomLabel(language)}` : `房源/房間：${roomLabel(language)}`;
+    const tail = language === "en" ? "If you have any further questions, please feel free to contact us." : language === "ja" ? "ご不明な点がございましたら、お気軽にご連絡くださいませ。" : "如有其他問題，歡迎隨時與我們聯繫。";
+    return `${head}\n${headerName(key, language)}：\n${translateRoom(value, language)}\n${tail}`;
+  }
+
+  function roomLabel(language) {
+    if (!state.room || !state.listing) return "";
+    const name = state.listing["房源名"] || state.room["房源ID"] || "";
+    const no = state.room["房间号"] || state.room["平台显示名称/房型"] || "";
+    if (language === "en") return `${name} Room ${no}`;
+    if (language === "ja") return `${name} ${no}号室`;
+    return `${name} ${no}房`;
+  }
+
+  function withRoom(value, language) {
+    if (!value) return language === "en" ? "Please confirm the listing and room number before replying." : language === "ja" ? "返信前に、施設名とお部屋番号をご確認ください。" : "請先確認客人的房源和房間號後再回覆。";
+    const head = language === "en" ? `Room: ${roomLabel(language)}` : language === "ja" ? `お部屋：${roomLabel(language)}` : `房源/房間：${roomLabel(language)}`;
+    return `${head}\n${translateRoom(value, language)}`;
+  }
+
+  function inlineRoom(value, language) {
+    if (!value) return withRoom("", language);
+    return `${roomLabel(language)}：${value}`;
+  }
+
+  function fallbackReply(text) {
+    const topic = text || "客人的问题";
+    return {
       zh: `您好，非常抱歉造成您的不便。\n關於「${topic}」，我們會馬上確認情況並盡快回覆您。\n如有其他問題，歡迎隨時與我們聯繫。`,
       ja: `この度はご不便をおかけしてしまい、誠に申し訳ございません。\n「${topic}」につきまして、すぐに状況を確認し、できるだけ早くご案内いたします。\nご不明な点がございましたら、いつでもご連絡くださいませ。`,
       en: `We sincerely apologize for the inconvenience.\nRegarding "${topic}", we will check the situation right away and get back to you as soon as possible.\nIf you have any further questions, please feel free to contact us.`
+    };
+  }
+
+  function render(replies, source, note = "") {
+    state.matched = { replies, source, note };
+    $("#source").textContent = source || "-";
+    $("#note").textContent = note || "-";
+    $("#note-wrap").style.display = note ? "block" : "none";
+    $("#zh").value = replies.zh || "";
+    $("#ja").value = replies.ja || "";
+    $("#en").value = replies.en || "";
+  }
+
+  async function copyText(text, label) {
+    try {
+      await navigator.clipboard.writeText(text || "");
+      setStatus(`${label}已复制`);
+    } catch (_) {
+      setStatus(`${label}复制失败，请长按文本框手动复制`);
     }
-  };
-  return replies[intent] || replies.apology;
-}
+  }
 
-function fallbackIntent(text) {
-  const value = normalize(text);
-  if (/(降价|优惠|便宜|折扣|打折|値下げ|割引|安く|discount|cheaper|lowerprice|price)/i.test(value)) return "discount";
-  if (/(谢谢|感謝|感谢|ありがとう|thank|thanks|thx)/i.test(value)) return "thanks";
-  if (/(不用谢|不客气|沒事|没事|どういたしまして|yourewelcome|noworries|noproblem)/i.test(value)) return "welcome";
-  if (/(催|还没回复|還沒回覆|怎么还|怎麼還|什么时候回复|什麼時候回覆|等很久|失望|不满意|不滿意|がっかり|残念|まだですか|返事|disappointed|stillwaiting|waitingtoolong|anyupdate|replysoon)/i.test(value)) return "followup";
-  if (/(核对|確認|确认|房东|屋主|オーナー|確認します|稍后|稍候|later|checkwith|confirmwith|owner)/i.test(value)) return "checking";
-  return "apology";
-}
+  function parseWorkbookBytes(bytes, loadedAt) {
+    if (!window.XLSX) throw new Error("Excel 解析库没有加载");
+    const workbook = XLSX.read(bytes, { type: "array", cellDates: false });
+    const sheets = {};
+    for (const name of workbook.SheetNames) sheets[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "", blankrows: false, raw: false });
+    return {
+      sheets,
+      listings: rowsToObjects(sheets["房源信息"]),
+      rooms: rowsToObjects(sheets["房间数据库"]),
+      rules: rowsToObjects(sheets["规则库"]).filter((row) => isEnabled(row["是否启用"])),
+      templates: rowsToObjects(sheets["回复模板库"]),
+      commands: rowsToObjects(sheets["客服短指令模板"]).filter((row) => isEnabled(row["是否启用"])),
+      loadedAt
+    };
+  }
 
-function applyResult(result) {
-  state.result = result;
-  $("#source").textContent = result.source;
-  $("#note").textContent = result.note || "";
-  $("#zh").value = result.replies.zh || "";
-  $("#ja").value = result.replies.ja || "";
-  $("#en").value = result.replies.en || "";
-}
+  function rowsToObjects(rows = []) {
+    if (!rows.length) return [];
+    const headers = rows[0].map((header, index) => String(header || `__col_${index}`).trim());
+    return rows.slice(1).map((row) => {
+      const object = {};
+      headers.forEach((header, index) => object[header] = String(row[index] || "").trim());
+      return object;
+    }).filter((row) => Object.values(row).some(Boolean));
+  }
 
-function showCandidates(items) {
-  const box = $("#candidates");
-  box.classList.toggle("show", items.length > 0);
-  box.innerHTML = items.map((item, index) => `<button class="candidate" data-index="${index}">${escapeHtml(item.source)}${item.note ? `<span>${escapeHtml(item.note)}</span>` : ""}</button>`).join("");
-  box.querySelectorAll(".candidate").forEach((button) => button.addEventListener("click", () => applyResult(items[Number(button.dataset.index)])));
-}
+  function headerName(key, language) {
+    const map = {
+      "房间号": { zh: "房間號", ja: "部屋番号", en: "Room number" },
+      "平台显示名称/房型": { zh: "平台顯示名稱/房型", ja: "表示名/部屋タイプ", en: "Platform display name / room type" },
+      "面积㎡": { zh: "面積", ja: "面積", en: "Area" },
+      "楼层/单元": { zh: "樓層/單元", ja: "階数/ユニット", en: "Floor / unit" },
+      "最大入住人数": { zh: "最大入住人數", ja: "最大宿泊人数", en: "Maximum guests" },
+      "床具类型与数量": { zh: "床具類型與數量", ja: "寝具の種類と数量", en: "Bedding type and quantity" },
+      "WiFi ID和密码": { zh: "WiFi ID和密碼", ja: "WiFi IDとパスワード", en: "WiFi ID and password" },
+      "洗衣机": { zh: "洗衣機", ja: "洗濯機", en: "Washing machine" },
+      "烘干机": { zh: "烘乾機", ja: "乾燥機", en: "Dryer" },
+      "厨房": { zh: "廚房", ja: "キッチン", en: "Kitchen" },
+      "电视/视频": { zh: "電視/影音服務", ja: "テレビ/動画サービス", en: "TV / video services" },
+      "是否可开窗": { zh: "是否可開窗", ja: "窓の開閉", en: "Window opening" },
+      "是否有电梯": { zh: "是否有電梯", ja: "エレベーター", en: "Elevator" },
+      "浴室": { zh: "浴室", ja: "浴室", en: "Bathroom" },
+      "厕所": { zh: "廁所", ja: "トイレ", en: "Toilet" },
+      "毛巾/浴巾": { zh: "毛巾/浴巾", ja: "タオル/バスタオル", en: "Towels / bath towels" },
+      "动态字段_房间设施": { zh: "房間設施", ja: "お部屋設備", en: "Room facilities" }
+    };
+    return (map[key] && map[key][language]) || key;
+  }
 
-function roomLine(language) {
-  return language === "en" ? `Room: ${state.listing["房源名"]} Room ${state.room["房间号"]}` : language === "ja" ? `お部屋：${state.listing["房源名"]} ${state.room["房间号"]}号室` : `房源/房間：${state.listing["房源名"]} ${state.room["房间号"]}房`;
-}
+  function translateRoom(value, language) {
+    const text = normalizeRoomPunctuation(String(value || ""));
+    if (language === "zh") return toTraditional(text);
+    if (language === "ja") return toJapanese(text);
+    if (language === "en") return toEnglish(text);
+    return text;
+  }
 
-function roomLabel(language) {
-  return language === "en" ? `${state.listing["房源名"]} Room ${state.room["房间号"]}` : language === "ja" ? `${state.listing["房源名"]} ${state.room["房间号"]}号室` : `${state.listing["房源名"]} ${state.room["房间号"]}房`;
-}
+  function normalizeRoomPunctuation(text) {
+    return text.replace(/[；;]/g, "\n").replace(/，/g, "，").replace(/\s*\n\s*/g, "\n").trim();
+  }
 
-function headerName(key, language) {
-  const map = {
-    "房间号": { zh: "房間號", ja: "部屋番号", en: "Room number" },
-    "平台显示名称/房型": { zh: "平台顯示名稱/房型", ja: "掲載名/部屋タイプ", en: "Platform display name / room type" },
-    "面积㎡": { zh: "面積", ja: "広さ", en: "Area" },
-    "楼层/单元": { zh: "樓層/單元", ja: "階/ユニット", en: "Floor/unit" },
-    "最大入住人数": { zh: "最多入住人數", ja: "最大宿泊人数", en: "Maximum occupancy" },
-    "床具类型与数量": { zh: "床具類型與數量", ja: "寝具の種類と数量", en: "Bedding type and quantity" },
-    "WiFi ID和密码": { zh: "WiFi ID和密碼", ja: "WiFi IDとパスワード", en: "WiFi ID and password" },
-    "洗衣机": { zh: "洗衣機", ja: "洗濯機", en: "Washing machine" },
-    "烘干机": { zh: "烘乾機", ja: "乾燥機", en: "Dryer" },
-    "厨房": { zh: "廚房", ja: "キッチン", en: "Kitchen" },
-    "电视/视频": { zh: "電視/影音", ja: "テレビ/動画サービス", en: "TV/video services" },
-    "是否可开窗": { zh: "窗戶是否可開", ja: "窓の開閉", en: "Window opening" },
-    "是否有电梯": { zh: "是否有電梯", ja: "エレベーター", en: "Elevator" },
-    "浴室": { zh: "浴室", ja: "浴室", en: "Bathroom" },
-    "厕所": { zh: "廁所", ja: "トイレ", en: "Toilet" },
-    "毛巾/浴巾": { zh: "毛巾/浴巾", ja: "タオル/バスタオル", en: "Towels/bath towels" },
-    "动态字段_房间设施": { zh: "房間設施", ja: "お部屋設備", en: "Room facilities" }
-  };
-  return (map[key] && map[key][language]) || translateRoom(key, language);
-}
+  function toTraditional(text) {
+    return text
+      .replace(/洗衣机/g, "洗衣機").replace(/烘干机/g, "烘乾機").replace(/厨房/g, "廚房")
+      .replace(/没有/g, "沒有").replace(/独立/g, "獨立").replace(/准备/g, "準備")
+      .replace(/步行约/g, "步行約").replace(/分钟/g, "分鐘").replace(/可打开/g, "可打開")
+      .replace(/双人床/g, "雙人床").replace(/单人床/g, "單人床")
+      .replace(/不可看/g, "不可看").replace(/地上波/g, "地上波");
+  }
 
-function translateRoom(value, language) {
-  const text = String(value || "").normalize("NFKC").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/，/g, "、").replace(/；/g, ";").replace(/：/g, ":").replace(/（/g, "(").replace(/）/g, ")");
-  if (language === "zh") return applyRoomReplacements(text, [[/ダブルベッド/g, "雙人床"], [/シングルベッド/g, "單人床"], [/掛布団/g, "棉被"], [/双人床/g, "雙人床"], [/单人床/g, "單人床"], [/被子/g, "棉被"], [/枕(?!頭)/g, "枕頭"], [/房内/g, "房內"], [/烘干/g, "烘乾"], [/酱油/g, "醬油"], [/窗户/g, "窗戶"], [/换气/g, "換氣"], [/无电梯/g, "無電梯"], [/护发素/g, "護髮素"], [/洗发水/g, "洗髮水"], [/楼/g, "樓"]]);
-  if (language === "ja") return toFullWidthDigits(applyRoomReplacements(text, roomReplacementsJa()).replace(/お部屋内独立洗濯機/g, "お部屋内に専用洗濯機がございます").replace(/お部屋内无乾燥機/g, "お部屋内に乾燥機はございません").replace(/是否可开窗/g, "窓の開閉").replace(/是否有エレベーター/g, "エレベーター").replace(/宿泊名数分/g, "宿泊人数分").replace(/独立/g, "専用").replace(/専用した浴室/g, "独立した浴室").replace(/専用したトイレ/g, "独立したトイレ").replace(/无/g, "なし").replace(/客人/g, "お客様").replace(/自有账号/g, "ご自身のアカウント"));
-  if (language === "en") return applyRoomReplacements(text, roomReplacementsEn()).replace(/in the room独立washing machine/g, "Private washing machine in the room").replace(/in the room无dryer/g, "No dryer in the room").replace(/是否可开窗/g, "Window opening").replace(/是否有elevator/g, "Elevator").replace(/独立/g, "private").replace(/无/g, "no").replace(/客人/g, "guest").replace(/自有账号/g, "own account").replace(/\b1 double beds\b/g, "1 double bed").replace(/\b1 single beds\b/g, "1 single bed").replace(/\b1 duvets\b/g, "1 duvet").replace(/\b1 pillows\b/g, "1 pillow");
-  return text;
-}
+  function toJapanese(text) {
+    return text
+      .replace(/洗衣机/g, "洗濯機").replace(/烘干机/g, "乾燥機").replace(/厨房/g, "キッチン")
+      .replace(/房内/g, "室内").replace(/独立/g, "専用").replace(/没有/g, "なし")
+      .replace(/有/g, "あり").replace(/准备/g, "用意あり").replace(/晾衣架/g, "物干しラック")
+      .replace(/附近步行约/g, "近くに徒歩約").replace(/分钟/g, "分").replace(/投币式/g, "コイン式")
+      .replace(/盐/g, "塩").replace(/油/g, "油").replace(/酱油/g, "醤油").replace(/胡椒/g, "こしょう")
+      .replace(/独立包装/g, "個包装").replace(/可看/g, "視聴可").replace(/不可看/g, "視聴不可")
+      .replace(/需要客人自有账号/g, "お客様ご自身のアカウントが必要").replace(/全部窗户可打开换气/g, "すべての窓は開閉でき、換気可能です")
+      .replace(/双人床/g, "ダブルベッド").replace(/单人床/g, "シングルベッド").replace(/被子/g, "掛布団").replace(/枕/g, "枕");
+  }
 
-function roomReplacementsJa() {
-  return [[/(?:双人床|雙人床|ダブルベッド)\s*(\d+)\s*台?/g, (_m, n) => `ダブルベッド${n}台`], [/(?:单人床|單人床|シングルベッド)\s*(\d+)\s*台?/g, (_m, n) => `シングルベッド${n}台`], [/(?:被子|棉被|掛布団)\s*(\d+)\s*(?:個|个|つ)?/g, (_m, n) => `掛布団${n}つ`], [/(?:枕头|枕頭|枕)\s*(\d+)\s*(?:個|个|つ)?/g, (_m, n) => `枕${n}つ`], [/房间/g, "お部屋"], [/房内/g, "お部屋内"], [/双人床/g, "ダブルベッド"], [/單人床|单人床/g, "シングルベッド"], [/被子|棉被/g, "掛布団"], [/枕头|枕頭/g, "枕"], [/有准备晾衣架/g, "物干しラックをご用意しております"], [/附近步行约1分钟有烘干房\(投币式\)/g, "徒歩約1分の場所にコイン式乾燥室がございます"], [/有厨房/g, "キッチンがございます"], [/盐\/油\/酱油\/胡椒为独立包装/g, "塩・油・醤油・胡椒は個包装でご用意しております"], [/可看 Amazon \/ Netflix \/ Hulu \/ YouTube/g, "Amazon / Netflix / Hulu / YouTubeをご視聴いただけます"], [/需客人自有账号/g, "お客様ご自身のアカウントが必要です"], [/不可看 BS\/CS\/地上波/g, "BS/CS/地上波放送はご視聴いただけません"], [/全部窗户可打开换气/g, "すべての窓を開けて換気できます"], [/无电梯/g, "エレベーターはございません"], [/独立浴室/g, "独立した浴室がございます"], [/独立厕所/g, "独立したトイレがございます"], [/准备人数份的毛巾和浴巾/g, "宿泊人数分のタオルとバスタオルをご用意しております"], [/浴室有洗发水/g, "浴室にシャンプーがございます"], [/洗衣机/g, "洗濯機"], [/烘干机/g, "乾燥機"], [/厨房/g, "キッチン"], [/电视/g, "テレビ"], [/视频/g, "動画サービス"], [/窗户/g, "窓"], [/电梯/g, "エレベーター"], [/厕所/g, "トイレ"], [/毛巾/g, "タオル"], [/浴巾/g, "バスタオル"], [/护发素/g, "コンディショナー"], [/沐浴露/g, "ボディソープ"], [/楼/g, "階"], [/人/g, "名"]];
-}
+  function toEnglish(text) {
+    return text
+      .replace(/洗衣机/g, "Washing machine").replace(/烘干机/g, "Dryer").replace(/厨房/g, "Kitchen")
+      .replace(/房内/g, "in the room").replace(/独立/g, "private").replace(/没有/g, "not available")
+      .replace(/有/g, "available").replace(/准备/g, "available").replace(/晾衣架/g, "drying rack")
+      .replace(/附近步行约/g, "about ").replace(/分钟/g, " minute walk nearby").replace(/投币式/g, "coin-operated")
+      .replace(/盐/g, "salt").replace(/油/g, "oil").replace(/酱油/g, "soy sauce").replace(/胡椒/g, "pepper")
+      .replace(/独立包装/g, "individually packaged").replace(/可看/g, "available").replace(/不可看/g, "not available")
+      .replace(/需要客人自有账号/g, "guest's own account is required").replace(/全部窗户可打开换气/g, "all windows can be opened for ventilation")
+      .replace(/双人床/g, "double bed").replace(/单人床/g, "single bed").replace(/被子/g, "duvet").replace(/枕/g, "pillow");
+  }
 
-function roomReplacementsEn() {
-  return [[/(?:双人床|雙人床|ダブルベッド)\s*(\d+)\s*台?/g, (_m, n) => `${n} double ${Number(n) === 1 ? "bed" : "beds"}`], [/(?:单人床|單人床|シングルベッド)\s*(\d+)\s*台?/g, (_m, n) => `${n} single ${Number(n) === 1 ? "bed" : "beds"}`], [/(?:被子|棉被|掛布団)\s*(\d+)\s*(?:個|个|つ)?/g, (_m, n) => `${n} ${Number(n) === 1 ? "duvet" : "duvets"}`], [/(?:枕头|枕頭|枕)\s*(\d+)\s*(?:個|个|つ)?/g, (_m, n) => `${n} ${Number(n) === 1 ? "pillow" : "pillows"}`], [/房间/g, "room"], [/房内/g, "in the room"], [/双人床|雙人床|ダブルベッド/g, "double bed"], [/单人床|單人床|シングルベッド/g, "single bed"], [/被子|棉被|掛布団/g, "duvet"], [/枕头|枕頭|枕/g, "pillow"], [/有准备晾衣架/g, "a drying rack is provided"], [/附近步行约1分钟有烘干房\(投币式\)/g, "there is a coin-operated dryer room about 1 minute away on foot"], [/有厨房/g, "Kitchen available"], [/盐\/油\/酱油\/胡椒为独立包装/g, "salt/oil/soy sauce/pepper are provided in individual packages"], [/可看 Amazon \/ Netflix \/ Hulu \/ YouTube/g, "Amazon / Netflix / Hulu / YouTube are available"], [/需客人自有账号/g, "guest's own account is required"], [/不可看 BS\/CS\/地上波/g, "BS/CS/terrestrial TV channels are not available"], [/全部窗户可打开换气/g, "all windows can be opened for ventilation"], [/无电梯/g, "no elevator"], [/独立浴室/g, "private bathroom"], [/独立厕所/g, "private toilet"], [/准备人数份的毛巾和浴巾/g, "towels and bath towels are prepared for the number of guests"], [/浴室有洗发水/g, "shampoo is available in the bathroom"], [/洗衣机/g, "washing machine"], [/烘干机/g, "dryer"], [/厨房/g, "kitchen"], [/电视/g, "TV"], [/视频/g, "video services"], [/窗户/g, "windows"], [/电梯/g, "elevator"], [/浴室/g, "bathroom"], [/厕所/g, "toilet"], [/毛巾/g, "towel"], [/浴巾/g, "bath towel"], [/护发素/g, "conditioner"], [/沐浴露/g, "body soap"], [/楼/g, "F"], [/人/g, " guests"], [/台|个/g, ""]];
-}
+  function applyFields(template, fields) {
+    return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => fields[key] || "");
+  }
 
-function applyRoomReplacements(text, replacements) {
-  let result = String(text || "");
-  for (const [pattern, replacement] of replacements) result = result.replace(pattern, replacement);
-  return result.split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
-}
-
-function applyFields(text, fields) {
-  return String(text || "").replace(/\{([^}]+)\}/g, (_match, key) => fields[key] || "");
-}
-
-function toFullWidthDigits(text) {
-  return String(text || "").replace(/[0-9]/g, (digit) => "０１２３４５６７８９"[Number(digit)]);
-}
-
-function debounce(fn, wait) {
-  let timer = null;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), wait);
-  };
-}
-
-function escapeHtml(value) {
-  return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
-}
-
-async function copy(text) {
-  await navigator.clipboard.writeText(text);
-  $("#status").textContent = "已复制";
-}
+  function cleanText(value) { return String(value || "").replace(/\s+/g, " ").trim(); }
+  function setStatus(text) { $("#status").textContent = text; }
+  function isEnabled(value) { return !value || /^(true|yes|y|1|启用|是)$/i.test(String(value).trim()); }
+  function splitKeywords(value) { return String(value || "").split(/[,，、;；\n/]+/).map((item) => item.trim()).filter(Boolean); }
+  function normalize(value) { return String(value || "").toLowerCase().normalize("NFKC").replace(/[\s\r\n\t:_\-・,，.。!！?？/\\()[\]【】「」『』'’]/g, ""); }
+  function isCjkKeyword(value) { return /[\u3400-\u9fff\u3040-\u30ff]/.test(value); }
+  function isBlankHeader(key) { return !key || /^__col_/.test(key); }
+  function hasShortage(value) { return SHORTAGE_WORDS.some((word) => value.includes(normalize(word))); }
+  function hasSupply(value) { return SUPPLY_WORDS.some((word) => value.includes(normalize(word))); }
+  function expandText(value) { return String(value || "").replace(/wi-?fi/ig, "wifi 无线 网络 internet ネット"); }
+  function escapeHtml(value) { return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;" }[char])); }
+  function debounce(fn, wait) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); }; }
+})();
